@@ -1,0 +1,19 @@
+# Local Python environment and runtime files
+.venv/
+.conda-env/
+.conda-pkgs/
+__pycache__/
+*.py[cod]
+.DS_Store
+.idea/
+
+# Data and generated analyses stay local
+/data/
+/DataAnalysis/results/
+*.csv
+*.json
+
+# Personal submission files stay outside the public code history
+*.pdf
+*.docx
+/Konzept_Phase_1.md
