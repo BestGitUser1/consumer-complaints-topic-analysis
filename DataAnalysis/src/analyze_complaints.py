@@ -21,6 +21,10 @@ NEGATIONS = {"no", "not", "never", "neither", "nor", "without"}
 TOP_N = 10
 
 
+def report_status(message: str) -> None:
+    print("[status] {}".format(message), flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path, help="Path to complaints_processed.csv")
@@ -81,7 +85,10 @@ def preprocess_texts(texts: Sequence[str]) -> Tuple[List[List[str]], int]:
 
     processed: List[List[str]] = []
     empty_after_processing = 0
-    for doc in nlp.pipe(texts, batch_size=256):
+    total = len(texts)
+    progress_interval = max(1000, total // 20)
+    report_status("spaCy preprocessing: 0/{:,} narratives (0%).".format(total))
+    for processed_count, doc in enumerate(nlp.pipe(texts, batch_size=256), start=1):
         tokens: List[str] = []
         for token in doc:
             if token.is_space or token.is_punct or not token.is_alpha:
@@ -95,6 +102,13 @@ def preprocess_texts(texts: Sequence[str]) -> Tuple[List[List[str]], int]:
         if not tokens:
             empty_after_processing += 1
         processed.append(tokens)
+        if processed_count % progress_interval == 0 or processed_count == total:
+            percent = 100.0 * processed_count / total if total else 100.0
+            report_status(
+                "spaCy preprocessing: {:,}/{:,} narratives ({:.0f}%).".format(
+                    processed_count, total, percent
+                )
+            )
     return processed, empty_after_processing
 
 
@@ -191,6 +205,22 @@ def summarize_topic_rows(model_name: str, terms: List[List[str]], assignments: n
     return pd.DataFrame(rows), pd.DataFrame(examples)
 
 
+def print_top_topics(summary: pd.DataFrame, top_n: int = 5) -> None:
+    print("\nMost frequent topics by unique narratives (top {} per model):".format(top_n), flush=True)
+    for model_name in ("LDA", "LSA"):
+        model_rows = summary.loc[summary["model"].eq(model_name)].sort_values(
+            ["unique_narratives", "topic"], ascending=[False, True]
+        ).head(top_n)
+        print("{}:".format(model_name), flush=True)
+        for row in model_rows.itertuples(index=False):
+            print(
+                "  Topic {} | {:,} unique narratives ({:.1%}) | {}".format(
+                    row.topic, row.unique_narratives, row.share, row.top_terms
+                ),
+                flush=True,
+            )
+
+
 def main() -> None:
     args = parse_args()
     if not args.input.is_file():
@@ -199,7 +229,13 @@ def main() -> None:
         raise SystemExit("Choose a valid topic range with k_min >= 2 and k_max >= k_min.")
 
     args.output.mkdir(parents=True, exist_ok=True)
+    report_status("Loading source CSV: {}".format(args.input))
     frame, audit = load_and_deduplicate(args.input)
+    report_status(
+        "Loaded {:,} rows; {:,} unique nonempty narratives remain after exact deduplication.".format(
+            audit["raw_rows"], len(frame)
+        )
+    )
     tokenized, empty_after_processing = preprocess_texts(frame["narrative"].tolist())
     keep_mask = np.array([bool(tokens) for tokens in tokenized])
     frame = frame.loc[keep_mask].reset_index(drop=True)
@@ -219,10 +255,16 @@ def main() -> None:
     dictionary = Dictionary(coherence_texts)
 
     sample_strings = [" ".join(tokens) for tokens in sample_tokens]
+    report_status("Vectorizing {:,} documents for topic-count selection.".format(sample_size))
     count_vectorizer_sample = build_vectorizer("count")
     tfidf_vectorizer_sample = build_vectorizer("tfidf")
     X_count_sample = count_vectorizer_sample.fit_transform(sample_strings)
     X_tfidf_sample = tfidf_vectorizer_sample.fit_transform(sample_strings)
+    report_status(
+        "Selection matrices ready: Count={} and TF-IDF={}.".format(
+            X_count_sample.shape, X_tfidf_sample.shape
+        )
+    )
     count_features_sample = count_vectorizer_sample.get_feature_names_out()
     tfidf_features_sample = tfidf_vectorizer_sample.get_feature_names_out()
     model_max_k = min(
@@ -237,6 +279,7 @@ def main() -> None:
 
     score_rows = []
     for k in range(args.k_min, model_max_k + 1):
+        report_status("Selecting LDA topic count: fitting K={}.".format(k))
         lda = LatentDirichletAllocation(
             n_components=k,
             learning_method="batch",
@@ -249,6 +292,7 @@ def main() -> None:
         lda_words = topic_terms(lda.components_, count_features_sample)
         lda_coherence = coherence_score(lda_words, coherence_texts, dictionary)
         lda_perplexity = float(lda.perplexity(X_count_sample))
+        report_status("LDA K={} complete; c_v={:.4f}.".format(k, lda_coherence))
         score_rows.append({
             "model": "LDA",
             "k": k,
@@ -258,11 +302,13 @@ def main() -> None:
         })
 
     max_svd_k = model_max_k
+    report_status("Fitting SVD on the TF-IDF selection matrix (maximum K={}).".format(max_svd_k))
     svd_sample = TruncatedSVD(n_components=max_svd_k, n_iter=7, random_state=args.random_state)
     svd_sample.fit(X_tfidf_sample)
     for k in range(args.k_min, model_max_k + 1):
         lsa_words = topic_terms(svd_sample.components_[:k], tfidf_features_sample)
         lsa_coherence = coherence_score(lsa_words, coherence_texts, dictionary)
+        report_status("LSA K={} coherence complete; c_v={:.4f}.".format(k, lsa_coherence))
         score_rows.append({
             "model": "LSA",
             "k": k,
@@ -287,10 +333,14 @@ def main() -> None:
 
     # Fit the selected models to all unique narratives.
     all_strings = [" ".join(tokens) for tokens in tokenized]
+    report_status("Vectorizing all {:,} unique narratives.".format(len(all_strings)))
     count_vectorizer = build_vectorizer("count")
     tfidf_vectorizer = build_vectorizer("tfidf")
     X_count = count_vectorizer.fit_transform(all_strings)
     X_tfidf = tfidf_vectorizer.fit_transform(all_strings)
+    report_status(
+        "Full matrices ready: Count={} and TF-IDF={}.".format(X_count.shape, X_tfidf.shape)
+    )
     pd.DataFrame([
         matrix_summary("CountVectorizer", X_count),
         matrix_summary("TfidfVectorizer", X_tfidf),
@@ -304,21 +354,27 @@ def main() -> None:
         evaluate_every=-1,
         random_state=args.random_state,
         n_jobs=1,
+        verbose=1,
     )
+    report_status("Fitting final LDA model with K={}.".format(lda_k))
     lda_distribution = lda_final.fit_transform(X_count)
+    report_status("Final LDA model complete.")
     lda_assignments = lda_distribution.argmax(axis=1)
     lda_confidence = lda_distribution.max(axis=1)
     lda_terms = topic_terms(lda_final.components_, count_vectorizer.get_feature_names_out())
 
     lsa_final = TruncatedSVD(n_components=lsa_k, n_iter=7, random_state=args.random_state)
+    report_status("Fitting final LSA model with K={}.".format(lsa_k))
     lsa_scores = lsa_final.fit_transform(X_tfidf)
+    report_status("Final LSA model complete.")
     lsa_assignments = np.abs(lsa_scores).argmax(axis=1)
     lsa_confidence = np.abs(lsa_scores).max(axis=1)
     lsa_terms = topic_terms(lsa_final.components_, tfidf_vectorizer.get_feature_names_out())
 
     lda_summary, lda_examples = summarize_topic_rows("LDA", lda_terms, lda_assignments, lda_confidence, frame)
     lsa_summary, lsa_examples = summarize_topic_rows("LSA", lsa_terms, lsa_assignments, lsa_confidence, frame)
-    pd.concat([lda_summary, lsa_summary], ignore_index=True).to_csv(args.output / "selected_topics_and_frequencies.csv", index=False)
+    topic_summary = pd.concat([lda_summary, lsa_summary], ignore_index=True)
+    topic_summary.to_csv(args.output / "selected_topics_and_frequencies.csv", index=False)
     pd.concat([lda_examples, lsa_examples], ignore_index=True).to_csv(args.output / "representative_narratives.csv", index=False)
     pd.DataFrame({
         "narrative_id": frame["narrative_id"],
@@ -330,6 +386,8 @@ def main() -> None:
         "lsa_absolute_score": lsa_confidence,
     }).to_csv(args.output / "topic_assignments.csv", index=False)
 
+    report_status("Writing analysis summaries and representative narratives.")
+    print_top_topics(topic_summary, top_n=5)
     print("Raw rows: {}".format(audit["raw_rows"]))
     print("Empty narratives removed: {}".format(audit["empty_narratives"]))
     print("Duplicate rows removed: {}".format(audit["duplicate_rows_removed"]))

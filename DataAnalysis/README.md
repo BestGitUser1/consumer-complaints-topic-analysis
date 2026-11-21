@@ -17,9 +17,11 @@ python -m pip install -r requirements.txt
 From this folder, run:
 
 ```sh
-python src/analyze_complaints.py --input ../../data/raw/complaints_processed.csv --output results
+python -u src/analyze_complaints.py --input ../../data/raw/complaints_processed.csv --output results
 ```
 
-The workflow removes empty narratives, collapses exact duplicate narratives, marks conflicting product labels as ambiguous, tokenizes and lemmatizes the available word sequences, compares CountVectorizer and TF-IDF representations, and fits LDA and LSA models. It evaluates topic counts from 2 through 15 using Gensim's c_v coherence. When scores are within 0.01, it prefers the smaller topic count; top terms and representative narratives are then reviewed for interpretability. It also writes a comparison of vector matrix sizes and sparsity. Results are written to `results/` and are not committed.
+The terminal reports progress through text preprocessing, topic-count selection, and model fitting. After the analysis, it prints the five most frequent topics for each model, with top terms, unique-narrative counts, and shares. The complete tables and audit data are written to `results/` (the local folder `Abgabe_2/DataAnalysis/results/`) and are not committed.
+
+The workflow removes empty narratives, collapses exact duplicate narratives, marks conflicting product labels as ambiguous, tokenizes and lemmatizes the available word sequences, compares CountVectorizer and TF-IDF representations, and fits LDA and LSA models. It evaluates topic counts from 2 through 15 using Gensim's c_v coherence. When scores are within 0.01, it prefers the smaller topic count; top terms and representative narratives are then reviewed for interpretability. It also writes a comparison of vector matrix sizes and sparsity.
 
 The source CSV is already text-preprocessed: it is lowercase and lacks punctuation and common words, including “not”. Original words and sentence boundaries cannot be recovered. Findings therefore describe themes in this processed collection of narratives; they are not estimates of complaints in the population.
