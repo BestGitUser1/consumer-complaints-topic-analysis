@@ -373,7 +373,9 @@ def main() -> None:
 
     lda_summary, lda_examples = summarize_topic_rows("LDA", lda_terms, lda_assignments, lda_confidence, frame)
     lsa_summary, lsa_examples = summarize_topic_rows("LSA", lsa_terms, lsa_assignments, lsa_confidence, frame)
-    topic_summary = pd.concat([lda_summary, lsa_summary], ignore_index=True)
+    topic_summary = pd.concat([lda_summary, lsa_summary], ignore_index=True).sort_values(
+        ["model", "unique_narratives", "topic"], ascending=[True, False, True]
+    ).reset_index(drop=True)
     topic_summary.to_csv(args.output / "selected_topics_and_frequencies.csv", index=False)
     pd.concat([lda_examples, lsa_examples], ignore_index=True).to_csv(args.output / "representative_narratives.csv", index=False)
     pd.DataFrame({
